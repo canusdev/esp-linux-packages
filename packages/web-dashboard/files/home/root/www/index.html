@@ -1,0 +1,189 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Linux on ESP32-S3</title>
+<style>
+  :root { color-scheme: dark; }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0; font-family: ui-monospace, "SF Mono", Menlo, Consolas, monospace;
+    background: #0d1117; color: #c9d1d9; line-height: 1.5;
+    display: flex; flex-direction: column; align-items: center; padding: 24px 16px;
+  }
+  main { width: 100%; max-width: 580px; }
+  h1 { font-size: 1.4rem; margin: 0 0 4px; color: #58a6ff; }
+  .sub { color: #8b949e; margin: 0 0 20px; font-size: .9rem; }
+  .card {
+    background: #161b22; border: 1px solid #30363d; border-radius: 10px;
+    padding: 16px 18px; margin-bottom: 14px;
+    box-shadow: 0 1px 3px rgba(0,0,0,0.2);
+  }
+  .card-title {
+    font-size: 0.95rem; font-weight: 600; color: #79c0ff;
+    margin-bottom: 10px; border-bottom: 1px solid #21262d; padding-bottom: 6px;
+  }
+  .row { display: flex; justify-content: space-between; align-items: center; padding: 5px 0; }
+  .row + .row { border-top: 1px solid #21262d; }
+  .k { color: #8b949e; font-size: 0.88rem; }
+  .v { color: #e6edf3; text-align: right; font-size: 0.88rem; }
+  .badge {
+    display: inline-block; padding: 2px 10px; border-radius: 999px;
+    font-size: .8rem; font-weight: 600;
+  }
+  .ok  { background: #12331d; color: #3fb950; border: 1px solid #238636; }
+  .bad { background: #3d1417; color: #f85149; border: 1px solid #b62324; }
+  .bar {
+    height: 8px; background: #21262d; border-radius: 4px; overflow: hidden;
+    margin: 6px 0 10px 0; position: relative;
+  }
+  .bar > i {
+    display: block; height: 100%; background: #58a6ff;
+    border-radius: 4px; transition: width 0.4s ease-in-out;
+  }
+  .bar > i.warn { background: #d29922; }
+  .bar > i.crit { background: #f85149; }
+  .disk-item { margin-top: 8px; }
+  .disk-item:first-child { margin-top: 0; }
+  .dim { color: #6e7681; font-size: 0.8rem; }
+  footer { color: #6e7681; font-size: .8rem; margin-top: 12px; text-align: center; }
+  a { color: #58a6ff; text-decoration: none; }
+  a:hover { text-decoration: underline; }
+</style>
+</head>
+<body>
+<main>
+  <h1>Linux on ESP32-S3</h1>
+  <p class="sub">A real Linux kernel running natively on a $3 microcontroller.</p>
+
+  <!-- System Info -->
+  <div class="card">
+    <div class="card-title">System Information</div>
+    <div class="row"><span class="k">Hardware RSA accelerator</span>
+      <span class="v"><span id="rsa" class="badge">…</span></span></div>
+    <div class="row"><span class="k">Host</span><span class="v" id="host">…</span></div>
+    <div class="row"><span class="k">Kernel</span><span class="v" id="kernel">…</span></div>
+    <div class="row"><span class="k">Uptime</span><span class="v" id="uptime">…</span></div>
+  </div>
+
+  <!-- CPU Usage -->
+  <div class="card">
+    <div class="card-title">CPU Utilization</div>
+    <div class="row"><span class="k">Usage</span><span class="v" id="cputxt">…</span></div>
+    <div class="bar"><i id="cpubar" style="width:0"></i></div>
+    <div class="row"><span class="k">Load average (1m, 5m, 15m)</span><span class="v" id="cpuload">…</span></div>
+  </div>
+
+  <!-- Memory Usage -->
+  <div class="card">
+    <div class="card-title">Memory (PSRAM)</div>
+    <div class="row"><span class="k">RAM used</span><span class="v" id="memtxt">…</span></div>
+    <div class="bar"><i id="membar" style="width:0"></i></div>
+    <div class="row"><span class="k">Available / Buffers</span><span class="v" id="memdetail">…</span></div>
+  </div>
+
+  <!-- Disk Usage -->
+  <div class="card">
+    <div class="card-title">Disk Storage</div>
+    <div id="disklist">
+      <div class="dim">Loading storage info…</div>
+    </div>
+  </div>
+
+  <footer>Served by BusyBox httpd · status from Lua CGI · refreshes every 3s</footer>
+</main>
+
+<script>
+function fmtUptime(s) {
+  s = parseInt(s, 10) || 0;
+  var d = Math.floor(s/86400), h = Math.floor(s%86400/3600), m = Math.floor(s%3600/60);
+  return (d ? d+"d " : "") + h+"h " + m+"m";
+}
+
+function fmtSize(kb) {
+  kb = parseInt(kb, 10) || 0;
+  if (kb >= 1048576) return (kb / 1048576).toFixed(1) + " GB";
+  if (kb >= 1024) return (kb / 1024).toFixed(1) + " MB";
+  return kb + " KB";
+}
+
+function barClass(pct) {
+  if (pct >= 90) return "crit";
+  if (pct >= 75) return "warn";
+  return "";
+}
+
+function tick() {
+  fetch("/cgi-bin/status", { cache: "no-store" })
+    .then(function(r) { return r.json(); })
+    .then(function(j) {
+      // Hardware & Host
+      var rsa = document.getElementById("rsa");
+      if (j.hw_rsa === "active") {
+        rsa.textContent = "ACTIVE"; rsa.className = "badge ok";
+      } else {
+        rsa.textContent = "absent"; rsa.className = "badge bad";
+      }
+      document.getElementById("host").textContent = j.host || "?";
+      document.getElementById("kernel").textContent = j.kernel || "?";
+      document.getElementById("uptime").textContent = fmtUptime(j.uptime_s);
+
+      // CPU
+      if (j.cpu) {
+        var cpupct = Math.min(100, Math.max(0, j.cpu.pct || 0));
+        document.getElementById("cputxt").textContent = cpupct + "%";
+        var cpubar = document.getElementById("cpubar");
+        cpubar.style.width = cpupct + "%";
+        cpubar.className = barClass(cpupct);
+        document.getElementById("cpuload").textContent =
+          (j.cpu.load1 || "0.00") + ", " + (j.cpu.load5 || "0.00") + ", " + (j.cpu.load15 || "0.00");
+      }
+
+      // Memory
+      var m = j.mem;
+      if (m && m.total_kb) {
+        var used = m.used_kb || 0, tot = m.total_kb || 1, pct = m.pct || Math.round(used * 100 / tot);
+        document.getElementById("memtxt").textContent =
+          fmtSize(used) + " / " + fmtSize(tot) + " (" + pct + "%)";
+        var membar = document.getElementById("membar");
+        membar.style.width = pct + "%";
+        membar.className = barClass(pct);
+        document.getElementById("memdetail").textContent =
+          fmtSize(m.avail_kb || m.free_kb) + " free · " + fmtSize((m.buffers_kb || 0) + (m.cached_kb || 0)) + " cache";
+      } else {
+        // Fallback for older JSON format
+        var tot = j.mem_total_kb || 0, free = j.mem_free_kb || 0, used = tot - free;
+        var pct = tot ? Math.round(used * 100 / tot) : 0;
+        document.getElementById("memtxt").textContent =
+          fmtSize(used) + " / " + fmtSize(tot) + " (" + pct + "%)";
+        var membar = document.getElementById("membar");
+        membar.style.width = pct + "%";
+        membar.className = barClass(pct);
+      }
+
+      // Disk
+      if (j.disk && j.disk.length > 0) {
+        var diskHtml = "";
+        for (var i = 0; i < j.disk.length; i++) {
+          var d = j.disk[i];
+          var dpct = Math.min(100, Math.max(0, d.pct || 0));
+          diskHtml += '<div class="disk-item">' +
+            '<div class="row">' +
+              '<span class="k">' + (d.label || d.mount) + '</span>' +
+              '<span class="v">' + fmtSize(d.used_kb) + ' / ' + fmtSize(d.total_kb) + ' (' + dpct + '%)</span>' +
+            '</div>' +
+            '<div class="bar"><i class="' + barClass(dpct) + '" style="width:' + dpct + '%"></i></div>' +
+          '</div>';
+        }
+        document.getElementById("disklist").innerHTML = diskHtml;
+      }
+    })
+    .catch(function(err) {});
+}
+
+tick();
+setInterval(tick, 3000);
+</script>
+</body>
+</html>

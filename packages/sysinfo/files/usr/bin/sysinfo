@@ -1,0 +1,20 @@
+#!/bin/sh
+#
+# sysinfo - Quick hardware, memory, network and storage overview for esp32s3.
+#
+echo "========================================="
+echo " ESP32-S3 Linux System Status"
+echo "========================================="
+echo "Kernel:  $(uname -srmo)"
+echo "Uptime:  $(uptime | sed 's/.*up \([^,]*\), .*/\1/')"
+echo "Date:    $(date)"
+echo ""
+echo "--- Memory (RAM) ---"
+free -h 2>/dev/null || free
+echo ""
+echo "--- Storage Mounts ---"
+df -h
+echo ""
+echo "--- Network Interfaces ---"
+ip -br addr 2>/dev/null || ifconfig | grep -E '^[a-z0-9]|inet '
+echo "========================================="

@@ -1,0 +1,116 @@
+#!/usr/bin/lua
+-- Live system status as JSON, for the board's web page.
+-- Reads /proc directly for CPU and memory (zero-fork).
+-- Disk usage is cached in /tmp for 15s to keep overhead minimal on NOMMU.
+
+local function slurp(p)
+	local f = io.open(p)
+	if not f then return "" end
+	local s = f:read("*a")
+	f:close()
+	return s
+end
+local function trim(s) return (s:gsub("^%s+", ""):gsub("%s+$", "")) end
+
+local uptime_raw = slurp("/proc/uptime"):match("^(%d+)")
+local uptime = tonumber(uptime_raw) or 0
+local host   = trim(slurp("/proc/sys/kernel/hostname"))
+local kver   = slurp("/proc/version"):match("Linux version (%S+)")
+local rsa    = slurp("/proc/crypto"):find("rsa%-esp32s3") and "active" or "absent"
+
+-- CPU metrics
+local load1, load5, load15 = slurp("/proc/loadavg"):match("(%S+)%s+(%S+)%s+(%S+)")
+
+local function get_cpu_pct()
+	local stat = slurp("/proc/stat")
+	local u, n, s, i, w, x, y = stat:match("cpu%s+(%d+)%s+(%d+)%s+(%d+)%s+(%d+)%s+(%d+)%s+(%d+)%s+(%d+)")
+	if not u then return 0 end
+	u, n, s, i, w, x, y = tonumber(u), tonumber(n), tonumber(s), tonumber(i), tonumber(w), tonumber(x), tonumber(y)
+	local idle = i + (w or 0)
+	local total = u + n + s + i + (w or 0) + (x or 0) + (y or 0)
+
+	local prev_f = io.open("/tmp/cpu_stat", "r")
+	local pct = 0
+	if prev_f then
+		local pu, pt = prev_f:read("*n", "*n")
+		prev_f:close()
+		if pu and pt and total > pt then
+			local d_total = total - pt
+			local d_idle = idle - pu
+			if d_total > 0 then
+				pct = math.floor(100 * (1 - (d_idle / d_total)) + 0.5)
+				if pct < 0 then pct = 0 elseif pct > 100 then pct = 100 end
+			end
+		end
+	end
+	local out_f = io.open("/tmp/cpu_stat", "w")
+	if out_f then
+		out_f:write(string.format("%d %d\n", idle, total))
+		out_f:close()
+	end
+	return pct
+end
+local cpu_pct = get_cpu_pct()
+
+-- Memory metrics
+local mem      = slurp("/proc/meminfo")
+local memtot   = tonumber(mem:match("MemTotal:%s*(%d+)")) or 0
+local memfree  = tonumber(mem:match("MemFree:%s*(%d+)")) or 0
+local memavail = tonumber(mem:match("MemAvailable:%s*(%d+)")) or memfree
+local buffers  = tonumber(mem:match("Buffers:%s*(%d+)")) or 0
+local cached   = tonumber(mem:match("Cached:%s*(%d+)")) or 0
+local memused  = memtot - memavail
+if memused < 0 then memused = 0 end
+local mempct   = memtot > 0 and math.floor((memused * 100 / memtot) + 0.5) or 0
+
+-- Disk metrics (cached for 15s)
+local function get_disk_json()
+	local cf = io.open("/tmp/disk_cache.json", "r")
+	if cf then
+		local content = cf:read("*a")
+		cf:close()
+		local ts, json = content:match("^(%d+)\n(.*)")
+		if ts and tonumber(ts) and (uptime - tonumber(ts)) < 15 and json and #json > 0 then
+			return json
+		end
+	end
+
+	local p = io.popen("df -k / /etc /home 2>/dev/null")
+	if not p then return "[]" end
+	local res = {}
+	for line in p:lines() do
+		local fs, total, used, avail, pct, mount = line:match("(%S+)%s+(%d+)%s+(%d+)%s+(%d+)%s+(%d+)%%%s+(%S+)")
+		if fs and mount then
+			local label = mount
+			if mount == "/" then label = "rootfs (/)"
+			elseif mount == "/etc" then label = "config (/etc)"
+			elseif mount == "/home" then label = "home (/home)" end
+			table.insert(res, string.format(
+				'{"mount":"%s","label":"%s","total_kb":%s,"used_kb":%s,"avail_kb":%s,"pct":%s}',
+				mount, label, total, used, avail, pct
+			))
+		end
+	end
+	p:close()
+	local json = "[" .. table.concat(res, ",") .. "]"
+	local out_f = io.open("/tmp/disk_cache.json", "w")
+	if out_f then
+		out_f:write(string.format("%d\n%s\n", uptime, json))
+		out_f:close()
+	end
+	return json
+end
+local disk_json = get_disk_json()
+
+io.write("Content-type: application/json\r\n\r\n")
+io.write(string.format(
+	'{"host":"%s","kernel":"%s","uptime_s":%d,' ..
+	'"cpu":{"pct":%d,"load1":"%s","load5":"%s","load15":"%s"},' ..
+	'"mem":{"total_kb":%d,"used_kb":%d,"free_kb":%d,"avail_kb":%d,"buffers_kb":%d,"cached_kb":%d,"pct":%d},' ..
+	'"disk":%s,' ..
+	'"mem_total_kb":%d,"mem_free_kb":%d,"hw_rsa":"%s"}\n',
+	host, kver or "?", uptime,
+	cpu_pct, load1 or "0.00", load5 or "0.00", load15 or "0.00",
+	memtot, memused, memfree, memavail, buffers, cached, mempct,
+	disk_json,
+	memtot, memfree, rsa))
