@@ -1,0 +1,46 @@
+#!/bin/sh
+#
+# S50mqtt-server - Start/stop MQTT Broker Daemon
+#
+
+DAEMON="/usr/sbin/mqtt-server"
+PIDFILE="/var/run/mqtt-server.pid"
+
+case "$1" in
+    start)
+        printf "Starting MQTT Server: "
+        if [ -f "$PIDFILE" ] && kill -0 "$(cat "$PIDFILE")" 2>/dev/null; then
+            echo "already running."
+            exit 0
+        fi
+        $DAEMON -d -p 1883 -b 0.0.0.0
+        pidof mqtt-server > "$PIDFILE" 2>/dev/null || true
+        echo "OK"
+        ;;
+    stop)
+        printf "Stopping MQTT Server: "
+        if [ -f "$PIDFILE" ]; then
+            kill "$(cat "$PIDFILE")" 2>/dev/null || true
+            rm -f "$PIDFILE"
+        else
+            killall mqtt-server 2>/dev/null || true
+        fi
+        echo "OK"
+        ;;
+    restart)
+        "$0" stop
+        sleep 1
+        "$0" start
+        ;;
+    status)
+        if [ -f "$PIDFILE" ] && kill -0 "$(cat "$PIDFILE")" 2>/dev/null; then
+            echo "mqtt-server is running (PID $(cat "$PIDFILE"))."
+        else
+            echo "mqtt-server is stopped."
+        fi
+        ;;
+    *)
+        echo "Usage: $0 {start|stop|restart|status}"
+        exit 1
+        ;;
+esac
