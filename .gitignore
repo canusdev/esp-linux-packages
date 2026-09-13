@@ -1,5 +1,23 @@
+# GitHub Pages output
 _site/
-__pycache__/
-*.pyc
-.DS_Store
+
+# Alpine / OpenWrt APK packages
+*.apk
+
+# Intermediate compilation artifacts
+*.o
+*.a
+*.so
+.build/
+
+# Compiled package binaries (sources only in git)
+packages/espctl/files/usr/bin/espctl
+packages/mqtt-client/files/usr/bin/mqtt-pub
+packages/mqtt-client/files/usr/bin/mqtt-sub
+packages/mqtt-server/files/usr/sbin/mqtt-server
+
+# Local environment & editors
+.vscode/
+.idea/
+*.swp
 *~

@@ -25,15 +25,15 @@ if [ -z "${XTENSA_GNU_CONFIG:-}" ]; then
     fi
 fi
 
-echo "Cross-compiling mqtt_server.c with $tc_gcc..."
-mkdir -p "$pkg_dir/files/usr/sbin"
+echo "Cross-compiling espctl with $tc_gcc..."
+mkdir -p "$pkg_dir/files/usr/bin"
 "$tc_gcc" -Os -mfdpic -mauto-litpools -fPIC -ffunction-sections -fdata-sections -Wl,--gc-sections \
-    "$pkg_dir/src/mqtt_server.c" -o "$pkg_dir/files/usr/sbin/mqtt-server"
+    "$pkg_dir/src/espctl.c" -o "$pkg_dir/files/usr/bin/espctl"
 
-# Strip binary
+# Strip binary if strip is available
 tc_strip="${tc_gcc%gcc}strip"
 if command -v "$tc_strip" >/dev/null 2>&1; then
-    "$tc_strip" "$pkg_dir/files/usr/sbin/mqtt-server"
+    "$tc_strip" "$pkg_dir/files/usr/bin/espctl"
 fi
 
-echo "Successfully built mqtt-server"
+echo "Successfully built espctl"

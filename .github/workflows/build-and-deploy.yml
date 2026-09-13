@@ -8,6 +8,11 @@ on:
     branches:
       - main
   workflow_dispatch:
+    inputs:
+      packages:
+        description: "Packages to build (space-separated, e.g. 'espctl mqtt-server'; leave empty for changed only, or 'all')"
+        required: false
+        default: ""
 
 permissions:
   contents: read
@@ -20,28 +25,100 @@ concurrency:
 
 jobs:
   build:
-    name: Build APK Packages & Site
+    name: Build Packages (Incremental) & Site
     runs-on: ubuntu-latest
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
 
       - name: Setup Python
         uses: actions/setup-python@v5
         with:
           python-version: "3.11"
 
-      - name: Build packages and repository
+      - name: Cache Xtensa Toolchain
+        id: cache-toolchain
+        uses: actions/cache@v4
+        with:
+          path: /opt/toolchains
+          key: xtensa-esp32s3-linux-toolchain-v1
+
+      - name: Download Xtensa Toolchain
+        if: steps.cache-toolchain.outputs.cache-hit != 'true'
+        run: |
+          sudo mkdir -p /opt/toolchains
+          sudo chown -R $USER:$USER /opt/toolchains
+          echo ">>> Downloading prebuilt Xtensa toolchain from GitHub Releases..."
+          curl -fsSL -o /tmp/xtensa-toolchain.tar.gz \
+            https://github.com/canusdev/esp-linux-packages/releases/download/toolchain-v1/xtensa-esp32s3-linux-uclibcfdpic.tar.gz
+          tar -xzf /tmp/xtensa-toolchain.tar.gz -C /opt/toolchains
+          rm -f /tmp/xtensa-toolchain.tar.gz
+
+      - name: Configure Toolchain Environment
+        run: |
+          echo "/opt/toolchains/xtensa-esp32s3-linux-uclibcfdpic/bin" >> $GITHUB_PATH
+          echo "XTENSA_GNU_CONFIG=/opt/toolchains/xtensa-esp32s3-linux-uclibcfdpic/lib/esp32s3.so" >> $GITHUB_ENV
+          echo "CROSS_COMPILE=xtensa-esp32s3-linux-uclibcfdpic-" >> $GITHUB_ENV
+
+      - name: Restore Previous Site Packages Cache
+        uses: actions/cache@v4
+        with:
+          path: _site
+          key: site-packages-${{ runner.os }}-${{ github.sha }}
+          restore-keys: |
+            site-packages-${{ runner.os }}-
+
+      - name: Determine Changes & Build Target Packages
         run: |
           chmod +x build.sh tools/*.py
-          ./build.sh
 
-      - name: Verify repository index
+          # Determine base ref for git diff
+          BASE_REF=""
+          if [ "${{ github.event_name }}" = "pull_request" ]; then
+            BASE_REF="origin/${{ github.base_ref }}"
+          elif [ -n "${{ github.event.before }}" ] && [ "${{ github.event.before }}" != "0000000000000000000000000000000000000000" ]; then
+            BASE_REF="${{ github.event.before }}"
+          else
+            # Default to previous commit if available
+            if git rev-parse HEAD~1 >/dev/null 2>&1; then
+              BASE_REF="HEAD~1"
+            fi
+          fi
+
+          INPUT_PKGS="${{ github.event.inputs.packages }}"
+
+          echo "Event: ${{ github.event_name }}"
+          echo "Base Ref: $BASE_REF"
+          echo "Input Packages: $INPUT_PKGS"
+
+          # Verify toolchain
+          xtensa-esp32s3-linux-uclibcfdpic-gcc --version
+
+          if [ "$INPUT_PKGS" = "all" ]; then
+            echo ">>> Building all packages (requested via dispatch)..."
+            python3 tools/build-repo.py --sync-remote https://canusdev.github.io/esp-linux-packages
+          elif [ -n "$INPUT_PKGS" ]; then
+            echo ">>> Building specific packages: $INPUT_PKGS"
+            python3 tools/build-repo.py --packages $INPUT_PKGS --sync-remote https://canusdev.github.io/esp-linux-packages
+          else
+            echo ">>> Building only changed/new packages..."
+            if [ -n "$BASE_REF" ]; then
+              python3 tools/build-repo.py --changed-only --base-ref "$BASE_REF" --sync-remote https://canusdev.github.io/esp-linux-packages
+            else
+              python3 tools/build-repo.py --changed-only --sync-remote https://canusdev.github.io/esp-linux-packages
+            fi
+          fi
+
+      - name: Verify Repository Index
         run: |
           test -s _site/index.html
           test -s _site/xtensa/APKINDEX.tar.gz
-          echo "=== APKINDEX contents ==="
+          echo "=== APKINDEX Contents ==="
           tar -ztvf _site/xtensa/APKINDEX.tar.gz
+          echo ""
+          echo "=== Parsed Package Index ==="
           tar -zxf _site/xtensa/APKINDEX.tar.gz -O APKINDEX
 
       - name: Configure GitHub Pages

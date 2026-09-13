@@ -9,20 +9,34 @@ elif [ -n "${XTENSA_GCC:-}" ]; then
     tc_gcc="$XTENSA_GCC"
 fi
 
-if [ -f "$pkg_dir/files/usr/bin/mqtt-pub" ] && [ -f "$pkg_dir/files/usr/bin/mqtt-sub" ]; then
-    echo "Using pre-built binaries for mqtt-client"
-    exit 0
+if ! command -v "$tc_gcc" >/dev/null 2>&1; then
+    echo "Error: Xtensa cross-compiler ($tc_gcc) not found in PATH or XTENSA_GCC!"
+    exit 1
 fi
 
-if command -v "$tc_gcc" >/dev/null 2>&1; then
-    echo "Cross-compiling mqtt-pub and mqtt-sub with $tc_gcc..."
-    mkdir -p "$pkg_dir/files/usr/bin"
-    "$tc_gcc" -Os -mfdpic -mauto-litpools -fPIC -ffunction-sections -fdata-sections -Wl,--gc-sections \
-        "$pkg_dir/src/mqtt_pub.c" -o "$pkg_dir/files/usr/bin/mqtt-pub"
-    "$tc_gcc" -Os -mfdpic -mauto-litpools -fPIC -ffunction-sections -fdata-sections -Wl,--gc-sections \
-        "$pkg_dir/src/mqtt_sub.c" -o "$pkg_dir/files/usr/bin/mqtt-sub"
-    exit 0
+# Auto-detect XTENSA_GNU_CONFIG if not set
+if [ -z "${XTENSA_GNU_CONFIG:-}" ]; then
+    gcc_path=$(command -v "$tc_gcc" || true)
+    if [ -n "$gcc_path" ]; then
+        tc_root=$(cd -- "$(dirname -- "$gcc_path")/.." && pwd)
+        if [ -f "$tc_root/lib/esp32s3.so" ]; then
+            export XTENSA_GNU_CONFIG="$tc_root/lib/esp32s3.so"
+        fi
+    fi
 fi
 
-echo "Toolchain not found, skipping compile"
-exit 1
+echo "Cross-compiling mqtt-pub and mqtt-sub with $tc_gcc..."
+mkdir -p "$pkg_dir/files/usr/bin"
+"$tc_gcc" -Os -mfdpic -mauto-litpools -fPIC -ffunction-sections -fdata-sections -Wl,--gc-sections \
+    "$pkg_dir/src/mqtt_pub.c" -o "$pkg_dir/files/usr/bin/mqtt-pub"
+"$tc_gcc" -Os -mfdpic -mauto-litpools -fPIC -ffunction-sections -fdata-sections -Wl,--gc-sections \
+    "$pkg_dir/src/mqtt_sub.c" -o "$pkg_dir/files/usr/bin/mqtt-sub"
+
+# Strip binaries
+tc_strip="${tc_gcc%gcc}strip"
+if command -v "$tc_strip" >/dev/null 2>&1; then
+    "$tc_strip" "$pkg_dir/files/usr/bin/mqtt-pub"
+    "$tc_strip" "$pkg_dir/files/usr/bin/mqtt-sub"
+fi
+
+echo "Successfully built mqtt-client (pub and sub)"

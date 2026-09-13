@@ -2,7 +2,7 @@
 
 An automated package repository for **Linux on ESP32-S3** (Xtensa NOMMU), providing binary `.apk` packages compatible with OpenWrt and Alpine Linux `apk-tools`.
 
-Packages are defined modularly folder-by-folder under [`packages/`](packages/), automatically compiled/packaged via **GitHub Actions CI**, and hosted via **GitHub Pages**.
+Packages are defined modularly folder-by-folder under [`packages/`](packages/), containing **only source code and build recipes** (no compiled binaries in git). Compilation is handled automatically and incrementally via **GitHub Actions CI**, and served via **GitHub Pages**.
 
 ---
 
@@ -12,7 +12,7 @@ Packages are defined modularly folder-by-folder under [`packages/`](packages/), 
 Ensure your ESP32-S3 is connected to Wi-Fi or Ethernet, then add this repository to `/etc/apk/repositories`:
 
 ```sh
-echo "https://<your-username>.github.io/esp-linux-packages/xtensa" >> /etc/apk/repositories
+echo "https://canusdev.github.io/esp-linux-packages/xtensa" >> /etc/apk/repositories
 ```
 
 ### 2. Update and Install Packages
@@ -24,7 +24,7 @@ apk update
 apk list
 
 # Install packages
-apk add espctl sysinfo esp32-web-dashboard
+apk add espctl sysinfo web-dashboard mqtt-server mqtt-client
 
 # Check installed package status
 apk info espctl
@@ -41,32 +41,43 @@ apk info espctl
 esp-linux-packages/
 ├── .github/
 │   └── workflows/
-│       └── build-and-deploy.yml    # CI/CD pipeline building & publishing to Pages
+│       └── build-and-deploy.yml    # CI/CD pipeline: incremental build & publish to Pages
 ├── packages/                       # Package definitions (folder by folder)
 │   ├── espctl/
 │   │   ├── package.conf            # Metadata (name, version, arch, description)
-│   │   └── files/                  # Target filesystem files
-│   │       └── usr/bin/espctl
-│   ├── sysinfo/
+│   │   ├── src/espctl.c            # Source code
+│   │   └── build.sh                # Compilation recipe
+│   ├── mqtt-server/
 │   │   ├── package.conf
-│   │   └── files/
-│   │       └── usr/bin/sysinfo
-│   ├── web-dashboard/
-│   │   ├── package.conf
-│   │   └── files/
-│   │       └── home/root/www/...
-│   ├── dash/                       # Source-built package recipe
-│   │   ├── package.conf
+│   │   ├── src/mqtt_server.c
+│   │   ├── files/etc/...           # Configs & init scripts
 │   │   └── build.sh
-│   └── ...
+│   ├── mqtt-client/
+│   │   ├── package.conf
+│   │   ├── src/                    # mqtt_pub.c, mqtt_sub.c
+│   │   └── build.sh
+│   ├── sysinfo/                    # Architecture-independent (noarch) script
+│   │   ├── package.conf
+│   │   └── files/usr/bin/sysinfo
+│   └── web-dashboard/              # HTML/CGI dashboard (noarch)
+│       ├── package.conf
+│       └── files/home/root/www/...
 ├── tools/
 │   ├── make-apk.py                 # Generates .apk packages with .PKGINFO
 │   ├── make-apkindex.py            # Generates APKINDEX.tar.gz
-│   ├── generate-index-html.py      # Generates GitHub Pages dashboard
-│   └── build-repo.py               # Master repository builder
-├── build.sh                        # Local build script
+│   ├── generate-index-html.py      # Generates modern GitHub Pages dashboard
+│   └── build-repo.py               # Master repository builder with incremental detection
+├── build.sh                        # Local build script with selective & changed-only support
 └── README.md
 ```
+
+---
+
+## ⚙️ Incremental CI & Source-Only Architecture
+
+- **Zero Binaries in Git:** All binary ELFs and `.apk` archives are excluded from git tracking. Only C sources, scripts, and build configurations are stored.
+- **Incremental Compilation:** GitHub Actions CI detects which packages are modified or newly added (via `git diff`). Only those changed packages are compiled. Unchanged packages are preserved on GitHub Pages.
+- **Automated Toolchain:** The Xtensa uClibc FDPIC toolchain is hosted on GitHub Releases (`toolchain-v1`) and cached in GitHub Actions.
 
 ---
 
@@ -76,7 +87,7 @@ Adding a new package to the repository is as simple as creating a new folder und
 
 ### Step 1: Create the Package Directory
 ```bash
-mkdir -p packages/my-app/files/usr/bin
+mkdir -p packages/my-app/src
 ```
 
 ### Step 2: Create `package.conf`
@@ -86,25 +97,39 @@ PKG_NAME="my-app"
 PKG_VER="1.0-r1"
 PKG_DESC="My awesome utility for ESP32-S3 Linux"
 PKG_ARCH="xtensa"                  # or "noarch" for scripts/web files
-PKG_URL="https://github.com/myuser/my-app"
+PKG_URL="https://github.com/canusdev/esp-linux"
 PKG_LICENSE="MIT"
 PKG_DEPS=""                        # Optional: space-separated dependencies
 ```
 
-### Step 3: Add Files
-Place your pre-compiled executable, script, or configuration files in `packages/my-app/files/`:
+### Step 3: Add Source Code and `build.sh`
+For C/C++ applications, place source files in `packages/my-app/src/` and create `packages/my-app/build.sh`:
 ```bash
-cp /path/to/my-binary packages/my-app/files/usr/bin/my-app
-chmod +x packages/my-app/files/usr/bin/my-app
-```
+#!/usr/bin/env bash
+set -euo pipefail
+pkg_dir=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)
+tc_gcc="${CROSS_COMPILE:-}gcc"
 
-*(Optional)* You can also provide `pre-install.sh`, `post-install.sh`, `pre-deinstall.sh`, or `post-deinstall.sh` scripts in `packages/my-app/`.
+mkdir -p "$pkg_dir/files/usr/bin"
+"$tc_gcc" -Os -mfdpic -mauto-litpools -fPIC -ffunction-sections -fdata-sections -Wl,--gc-sections \
+    "$pkg_dir/src/my_app.c" -o "$pkg_dir/files/usr/bin/my-app"
+
+# Strip binary
+tc_strip="${tc_gcc%gcc}strip"
+if command -v "$tc_strip" >/dev/null 2>&1; then
+    "$tc_strip" "$pkg_dir/files/usr/bin/my-app"
+fi
+```
+*(For shell scripts or web assets (`PKG_ARCH="noarch"`), simply place the files in `packages/my-app/files/` directly without a `build.sh`.)*
 
 ### Step 4: Test Locally
 ```bash
-./build.sh
+# Build only your new package
+./build.sh my-app
+
+# Or build all changed packages
+./build.sh --changed
 ```
-This will compile/package all packages and generate the static site in `_site/`.
 
 ### Step 5: Push to GitHub
 ```bash
@@ -112,7 +137,7 @@ git add packages/my-app/
 git commit -m "feat(pkg): add my-app package"
 git push origin main
 ```
-GitHub Actions will automatically build the package, update `APKINDEX.tar.gz`, and deploy to GitHub Pages!
+GitHub Actions will automatically compile **only `my-app`**, add it to `APKINDEX.tar.gz`, and deploy to GitHub Pages!
 
 ---
 
@@ -121,8 +146,8 @@ GitHub Actions will automatically build the package, update `APKINDEX.tar.gz`, a
 To activate GitHub Pages for your repository:
 1. Go to your repository on GitHub -> **Settings** -> **Pages**.
 2. Under **Build and deployment** -> **Source**, select **GitHub Actions**.
-3. Every push to the `main` branch will automatically build and publish the packages to:
-   `https://<username>.github.io/esp-linux-packages/`
+3. Every push to the `main` branch will automatically compile changed packages and publish the repository to:
+   `https://canusdev.github.io/esp-linux-packages/`
 
 ---
 
@@ -130,7 +155,16 @@ To activate GitHub Pages for your repository:
 
 To build and preview the repository web dashboard locally:
 ```bash
-./build.sh
+# Build specific packages
+./build.sh espctl mqtt-server
+
+# Build only changed packages
+./build.sh --changed
+
+# Clean compiled binaries from files/
+./build.sh clean
+
+# Preview locally
 python3 -m http.server -d _site 8080
 ```
 Open `http://localhost:8080` in your browser to view the generated repository dashboard.
@@ -145,28 +179,20 @@ apk add mqtt-server mqtt-client
 ```
 
 ### 2. Start the MQTT Broker
-Start manually in foreground or background:
 ```sh
 # Run in background
 mqtt-server -d -p 1883
-```
-Or use the init service:
-```sh
+
+# Or via init script
 /etc/init.d/S50mqtt-server start
 /etc/init.d/S50mqtt-server status
 ```
 
-### 3. Subscribe to Topics
+### 3. Subscribe & Publish
 ```sh
-# Stream messages in real time
-mqtt-sub -t "esp32/#" -v
-```
+# Stream messages
+mqtt-sub -t "esp32/#" -v &
 
-### 4. Publish Messages
-```sh
-# Publish a single message
+# Publish data
 mqtt-pub -t "esp32/sensors/temp" -m "24.5"
-
-# Publish sensor data from pipe / stdin
-echo "CPU load: $(uptime)" | mqtt-pub -t "esp32/status"
 ```
