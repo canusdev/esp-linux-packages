@@ -134,3 +134,39 @@ To build and preview the repository web dashboard locally:
 python3 -m http.server -d _site 8080
 ```
 Open `http://localhost:8080` in your browser to view the generated repository dashboard.
+
+---
+
+## 📡 MQTT Packages Usage Example
+
+### 1. Install MQTT Server and Client
+```sh
+apk add mqtt-server mqtt-client
+```
+
+### 2. Start the MQTT Broker
+Start manually in foreground or background:
+```sh
+# Run in background
+mqtt-server -d -p 1883
+```
+Or use the init service:
+```sh
+/etc/init.d/S50mqtt-server start
+/etc/init.d/S50mqtt-server status
+```
+
+### 3. Subscribe to Topics
+```sh
+# Stream messages in real time
+mqtt-sub -t "esp32/#" -v
+```
+
+### 4. Publish Messages
+```sh
+# Publish a single message
+mqtt-pub -t "esp32/sensors/temp" -m "24.5"
+
+# Publish sensor data from pipe / stdin
+echo "CPU load: $(uptime)" | mqtt-pub -t "esp32/status"
+```
